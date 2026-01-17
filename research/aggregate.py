@@ -178,21 +178,21 @@ def _trim_why(reason: str) -> str:
 
 def policy_rows_to_dataframe(rows: List[PolicyRow]) -> pd.DataFrame:
     data = [row.__dict__ for row in rows]
-    df = pd.DataFrame(data)
-    df = df[
-        [
-            "brand",
-            "gender",
-            "category",
-            "public_sale_discount_pct",
-            "member_extra_pct",
-            "public_discount_cap_pct",
-            "discount_visibility",
-            "msrp_strikethrough_rule",
-            "coupon_eligibility",
-            "evidence_level",
-            "confidence",
-            "why",
-        ]
+    columns = [
+        "brand",
+        "gender",
+        "category",
+        "public_sale_discount_pct",
+        "member_extra_pct",
+        "public_discount_cap_pct",
+        "discount_visibility",
+        "msrp_strikethrough_rule",
+        "coupon_eligibility",
+        "evidence_level",
+        "confidence",
+        "why",
     ]
-    return df
+    if not data:
+        return pd.DataFrame(columns=columns)
+    df = pd.DataFrame(data)
+    return df.reindex(columns=columns)

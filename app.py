@@ -132,8 +132,49 @@ def load_observations(paths: cache.RunPaths) -> pd.DataFrame:
     return pd.DataFrame()
 
 
+DEFAULT_CATEGORY_POLICY = {
+    "Clothing": (20, 40),
+    "Shoes": (15, 35),
+    "Bags": (10, 25),
+    "Accessories": (15, 35),
+    "Jewelry": (5, 15),
+    "Watches": (0, 10),
+    "Beauty": (15, 35),
+}
+
+
+def _build_inferred_defaults(brands: List[str]) -> List[aggregate.PolicyRow]:
+    rows: List[aggregate.PolicyRow] = []
+    for brand in brands:
+        for gender, category in aggregate.CATEGORIES:
+            sale_pct, cap_pct = DEFAULT_CATEGORY_POLICY.get(category, (10, 25))
+            member_extra = 5
+            if sale_pct >= 30:
+                member_extra = min(member_extra, 5)
+            rows.append(
+                aggregate.PolicyRow(
+                    brand=brand,
+                    gender=gender,
+                    category=category,
+                    public_sale_discount_pct=sale_pct,
+                    member_extra_pct=member_extra,
+                    public_discount_cap_pct=cap_pct,
+                    discount_visibility="SALE_ONLY",
+                    msrp_strikethrough_rule="NEVER",
+                    coupon_eligibility="WELCOME+RETARGET",
+                    evidence_level="INFERRED",
+                    confidence="LOW",
+                    why="No observations; inferred conservative defaults",
+                )
+            )
+    return rows
+
+
 def build_policy_output(brands: List[str], observations: pd.DataFrame) -> pd.DataFrame:
-    rows = aggregate.aggregate_policy(brands, observations)
+    if observations.empty:
+        rows = _build_inferred_defaults(brands)
+    else:
+        rows = aggregate.aggregate_policy(brands, observations)
     return aggregate.policy_rows_to_dataframe(rows)
 
 
