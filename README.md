@@ -7,18 +7,15 @@ Internal Streamlit app for US discount policy research.
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
-cp config.yml config.local.yml  # optional overrides
-streamlit run app.py
+pip install -r requirements.txt && streamlit run app.py
 ```
 
-Windows:
+Windows (PowerShell):
 
-```bat
+```powershell
 python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-streamlit run app.py
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt; streamlit run app.py
 ```
 
 ## API keys (optional)
@@ -30,6 +27,11 @@ SERPAPI_API_KEY=your_key_here
 GOOGLE_CSE_API_KEY=your_key_here
 GOOGLE_CSE_CX=your_cx_here
 ```
+
+## Windows helpers
+
+- `run.bat` starts the Streamlit app after your environment is activated.
+- `run.ps1` starts the Streamlit app after your environment is activated.
 
 ## Notes
 
