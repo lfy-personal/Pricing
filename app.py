@@ -11,8 +11,11 @@ import pandas as pd
 import streamlit as st
 import yaml
 from dotenv import load_dotenv
+import requests
 
 from research import aggregate, cache, discovery, extract
+
+load_dotenv()
 
 COMPETITORS = {
     "Net-a-Porter": "net-a-porter.com",
@@ -72,10 +75,11 @@ def run_batch(
     config: dict,
     paths: cache.RunPaths,
     discovered_urls: Dict[str, List[str]],
-) -> None:
+) -> List[str]:
     max_urls = int(config.get("max_urls_per_combo", 6))
     delay_seconds = float(config.get("request_delay_seconds", 2))
     user_agent = str(config.get("user_agent", "LFYDiscountResearcher/1.0"))
+    errors: List[str] = []
     for brand in batch_brands:
         for gender, category in aggregate.CATEGORIES:
             for competitor, domain in COMPETITORS.items():
@@ -83,9 +87,37 @@ def run_batch(
                 urls = discovered_urls.get(combo_key, [])
                 if not urls:
                     for query in build_query(brand, gender, category, domain):
-                        new_urls = discovery.discover_urls(query, user_agent, max_urls)
+                        try:
+                            new_urls = discovery.discover_urls(
+                                query, user_agent, max_urls
+                            )
+                        except requests.RequestException as exc:
+                            status_code = getattr(exc.response, "status_code", None)
+                            message = (
+                                f"Search API request failed ({status_code}) for {query}"
+                                if status_code
+                                else f"Search API request failed for {query}"
+                            )
+                            if status_code in {401, 429}:
+                                message = (
+                                    f"Search API authentication/rate limit error "
+                                    f"({status_code}) for {query}"
+                                )
+                            cache.append_error(
+                                paths,
+                                {
+                                    "timestamp": datetime.utcnow().isoformat(),
+                                    "context": combo_key,
+                                    "error": message,
+                                },
+                            )
+                            cache.write_log(paths, message)
+                            errors.append(message)
+                            time.sleep(delay_seconds)
+                            continue
                         urls.extend(new_urls)
                         urls = urls[:max_urls]
+                        time.sleep(delay_seconds)
                     if urls:
                         discovered_urls[combo_key] = urls
                 if not urls:
@@ -115,20 +147,35 @@ def run_batch(
                             paths, f"Fetched {url} for {brand} {gender} {category}"
                         )
                     except Exception as exc:  # noqa: BLE001
+                        status_code = getattr(
+                            getattr(exc, "response", None), "status_code", None
+                        )
+                        message = (
+                            f"Fetch failed ({status_code}) for {url}"
+                            if status_code
+                            else f"Fetch failed for {url}"
+                        )
+                        if status_code == 403:
+                            message = f"Blocked (403) while fetching {url}"
                         cache.append_error(
                             paths,
                             {
                                 "timestamp": datetime.utcnow().isoformat(),
                                 "context": f"{brand}|{gender}|{category}|{competitor}|{url}",
-                                "error": str(exc),
+                                "error": message,
                             },
                         )
+                        errors.append(message)
                     time.sleep(delay_seconds)
+    return errors
 
 
 def load_observations(paths: cache.RunPaths) -> pd.DataFrame:
     if paths.observations.exists():
-        return pd.read_csv(paths.observations)
+        try:
+            return pd.read_csv(paths.observations)
+        except (pd.errors.ParserError, OSError):
+            return pd.DataFrame()
     return pd.DataFrame()
 
 
@@ -164,18 +211,30 @@ def _build_inferred_defaults(brands: List[str]) -> List[aggregate.PolicyRow]:
                     coupon_eligibility="WELCOME+RETARGET",
                     evidence_level="INFERRED",
                     confidence="LOW",
-                    why="No observations; inferred conservative defaults",
+                    why="No observations; inferred defaults",
                 )
             )
     return rows
 
 
+def _normalize_observations(observations: pd.DataFrame) -> pd.DataFrame:
+    required = ["brand", "gender", "category", "discount_pct"]
+    if observations is None or observations.empty:
+        return pd.DataFrame(columns=required)
+    missing = [col for col in required if col not in observations.columns]
+    for col in missing:
+        observations[col] = pd.NA
+    return observations[required]
+
+
 def build_policy_output(brands: List[str], observations: pd.DataFrame) -> pd.DataFrame:
+    observations = _normalize_observations(observations)
     if observations.empty:
         rows = _build_inferred_defaults(brands)
     else:
         rows = aggregate.aggregate_policy(brands, observations)
-    return aggregate.policy_rows_to_dataframe(rows)
+    df = aggregate.policy_rows_to_dataframe(rows)
+    return df.reindex(columns=aggregate.POLICY_COLUMNS)
 
 
 def save_excel(df: pd.DataFrame, path: Path) -> None:
@@ -203,12 +262,24 @@ def _calculate_progress(completed_brands: List[str], total_brands: int) -> float
     return progress_value
 
 
+def _search_api_status() -> tuple[str, bool]:
+    if os.getenv("SERPAPI_API_KEY"):
+        return "Search API: configured (SerpAPI)", True
+    if os.getenv("GOOGLE_CSE_API_KEY") and os.getenv("GOOGLE_CSE_CX"):
+        return "Search API: configured (Google CSE)", True
+    return "Search API: not configured \u2192 inference only", False
+
+
 def main() -> None:
-    load_dotenv()
     st.set_page_config(page_title="LFY US Discount Researcher", layout="wide")
     st.title("LFY US Discount Researcher")
 
     config = load_config()
+    api_status, api_configured = _search_api_status()
+    if api_configured:
+        st.info(api_status)
+    else:
+        st.warning(api_status)
     uploaded = st.file_uploader("Upload brands CSV or XLSX", type=["csv", "xlsx"])
 
     if "run_status" not in st.session_state:
@@ -217,6 +288,8 @@ def main() -> None:
         st.session_state.run_id = None
     if "brands" not in st.session_state:
         st.session_state.brands = []
+    if "last_errors" not in st.session_state:
+        st.session_state.last_errors = []
 
     if not st.session_state.run_id:
         latest_run = _find_latest_run()
@@ -274,6 +347,17 @@ def main() -> None:
     progress_value = _calculate_progress(completed, total_brands)
     progress_bar = st.progress(progress_value)
     status_placeholder = st.empty()
+    show_debug = st.checkbox("Show debug", value=False)
+    if show_debug:
+        st.write(
+            {
+                "total_brands": total_brands,
+                "completed_brands": len(completed),
+                "remaining_brands": len(remaining),
+                "progress_value": progress_value,
+                "run_status": st.session_state.run_status,
+            }
+        )
 
     if st.session_state.run_status == "cancelled":
         progress_payload["status"] = "cancelled"
@@ -288,7 +372,9 @@ def main() -> None:
         status_placeholder.info(
             f"Processing batch {batch_number} with brands: {', '.join(batch)}"
         )
-        run_batch(batch, config, paths, discovered_urls)
+        batch_errors = run_batch(batch, config, paths, discovered_urls)
+        if batch_errors:
+            st.session_state.last_errors.extend(batch_errors)
         completed.extend(batch)
         progress_payload["completed_brands"] = completed
         progress_payload["status"] = "running"
@@ -306,15 +392,25 @@ def main() -> None:
     st.write(f"Completed {len(completed)} of {total_brands} brands")
     if remaining:
         st.write(f"Remaining: {len(remaining)}")
+    if st.session_state.last_errors:
+        with st.expander("Recent errors (search/scrape)", expanded=False):
+            st.write("\n".join(st.session_state.last_errors[-10:]))
 
     observations = load_observations(paths)
     policy_df = build_policy_output(st.session_state.brands, observations)
-    save_excel(policy_df, paths.output_final)
-    save_excel(policy_df, paths.output_partial)
+    try:
+        save_excel(policy_df, paths.output_final)
+        save_excel(policy_df, paths.output_partial)
+    except OSError as exc:
+        st.error(f"Failed to write output files: {exc}")
 
     observed_count = policy_df[policy_df["evidence_level"] == "OBSERVED"].shape[0]
     inferred_count = policy_df[policy_df["evidence_level"] == "INFERRED"].shape[0]
-    avg_sale = round(policy_df["public_sale_discount_pct"].mean(), 2) if not policy_df.empty else 0
+    avg_sale = (
+        round(policy_df["public_sale_discount_pct"].mean(), 2)
+        if not policy_df.empty
+        else 0
+    )
 
     st.subheader("Stats")
     st.write(f"OBSERVED rows: {observed_count}")
