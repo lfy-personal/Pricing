@@ -1,0 +1,4 @@
+batch_size: 10
+max_urls_per_combo: 6
+request_delay_seconds: 2
+user_agent: "LFYDiscountResearcher/1.0 (+internal-use)"
