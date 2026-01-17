@@ -25,3 +25,9 @@ def test_build_policy_output_defaults_for_empty_observations():
         "confidence",
         "why",
     ]
+
+
+def test_calculate_progress_clamps_and_bounds():
+    assert app._calculate_progress(["a", "b"], 4) == 0.5
+    assert app._calculate_progress(["a", "b", "c"], 2) == 1.0
+    assert app._calculate_progress([], 0) == 0.0
