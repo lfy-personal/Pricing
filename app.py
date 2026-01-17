@@ -194,6 +194,15 @@ def _find_latest_run() -> str | None:
     return None
 
 
+def _calculate_progress(completed_brands: List[str], total_brands: int) -> float:
+    if total_brands <= 0:
+        return 0.0
+    progress_value = len(completed_brands) / total_brands
+    progress_value = max(0.0, min(1.0, progress_value))
+    assert 0.0 <= progress_value <= 1.0
+    return progress_value
+
+
 def main() -> None:
     load_dotenv()
     st.set_page_config(page_title="LFY US Discount Researcher", layout="wide")
@@ -246,23 +255,24 @@ def main() -> None:
     paths = cache.ensure_run_dir(run_id)
     cache.ensure_run_log(paths)
 
+    total_brands = len(st.session_state.brands)
     progress_payload = cache.load_progress(paths) or {
         "run_id": run_id,
         "completed_brands": [],
         "status": "initialized",
-        "total_brands": len(st.session_state.brands),
+        "total_brands": total_brands,
     }
 
-    if progress_payload.get("total_brands") != len(st.session_state.brands):
-        progress_payload["total_brands"] = len(st.session_state.brands)
+    if progress_payload.get("total_brands") != total_brands:
+        progress_payload["total_brands"] = total_brands
 
     discovered_urls = cache.load_discovered_urls(paths)
 
-    total_brands = len(st.session_state.brands)
     completed = progress_payload.get("completed_brands", [])
     remaining = [b for b in st.session_state.brands if b not in completed]
 
-    progress_bar = st.progress(len(completed) / total_brands if total_brands else 0)
+    progress_value = _calculate_progress(completed, total_brands)
+    progress_bar = st.progress(progress_value)
     status_placeholder = st.empty()
 
     if st.session_state.run_status == "cancelled":
@@ -284,7 +294,8 @@ def main() -> None:
         progress_payload["status"] = "running"
         cache.save_discovered_urls(paths, discovered_urls)
         cache.save_progress(paths, progress_payload)
-        progress_bar.progress(len(completed) / total_brands if total_brands else 0)
+        progress_value = _calculate_progress(completed, total_brands)
+        progress_bar.progress(progress_value)
         st.experimental_rerun()
 
     if not remaining:
